@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
 import { Undo2, RotateCcw, Plus, ChevronLeft } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { BallResult, MatchState, BallType } from './types';
@@ -76,19 +76,27 @@ export default function App() {
 
   const [showEvent, setShowEvent] = useState<{ text: string; color: string } | null>(null);
   const [wicketSelection, setWicketSelection] = useState<'type' | 'runs' | null>(null);
+  const audioCtxRef = useMemo(() => {
+    if (typeof window !== 'undefined') {
+      return new (window.AudioContext || (window as any).webkitAudioContext)();
+    }
+    return null;
+  }, []);
 
   const playSound = (type: BallType | number) => {
     try {
-      // Additional Sound Effects
-      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-      const now = ctx.currentTime;
+      if (!audioCtxRef) return;
+      if (audioCtxRef.state === 'suspended') {
+        audioCtxRef.resume();
+      }
+      const now = audioCtxRef.currentTime;
 
       const playTone = (freq: number, duration: number, vol: number, type: OscillatorType = 'sine') => {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
+        const osc = audioCtxRef.createOscillator();
+        const gain = audioCtxRef.createGain();
         osc.type = type;
         osc.connect(gain);
-        gain.connect(ctx.destination);
+        gain.connect(audioCtxRef.destination);
         osc.frequency.setValueAtTime(freq, now);
         gain.gain.setValueAtTime(vol, now);
         gain.gain.exponentialRampToValueAtTime(0.01, now + duration);
@@ -126,14 +134,14 @@ export default function App() {
     setTimeout(() => setShowEvent(null), 1200);
   };
 
-  const speak = (text: string, rate: number = 1.1) => {
+  const speak = useCallback((text: string, rate: number = 1.1) => {
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.rate = rate;
     utterance.pitch = 1;
     window.speechSynthesis.speak(utterance);
-  };
+  }, []);
 
-  const announceSummary = () => {
+  const announceSummary = useCallback(() => {
     const currentTeam = match.innings === 1 ? match.team1Name : match.team2Name;
     const overs = `${Math.floor(match.balls / 6)}.${match.balls % 6}`;
     const summary = `${currentTeam} scored ${match.runs} runs for ${match.wickets} wickets in ${overs} overs.`;
@@ -153,7 +161,7 @@ export default function App() {
       }
       speak(summary + " " + winnerText);
     }
-  };
+  }, [match.innings, match.team1Name, match.team2Name, match.balls, match.runs, match.wickets, match.firstInningsScore, speak]);
 
   const addBall = (result: BallResult) => {
     // Trigger Sound
@@ -228,11 +236,34 @@ export default function App() {
     if (match.innings === 1) {
       return match.balls >= totalOvers * 6 || match.wickets >= totalWickets;
     } else {
-      // Second innings: target reached or all out/overs finished
       const targetReached = match.firstInningsScore !== null && match.runs > match.firstInningsScore;
       return targetReached || match.balls >= totalOvers * 6 || match.wickets >= totalWickets;
     }
-  }, [match, totalOvers, totalWickets]);
+  }, [match.innings, match.balls, match.wickets, match.runs, match.firstInningsScore, totalOvers, totalWickets]);
+
+  const currentOverBalls = useMemo(() => {
+    const totalLegalBalls = match.balls;
+    const completedOvers = Math.floor(totalLegalBalls / 6);
+    const effectiveCompletedOvers = isMatchFinished 
+      ? Math.max(0, completedOvers - 1) 
+      : completedOvers;
+
+    let legalCount = 0;
+    let overStartIdx = 0;
+    const targetLegalStart = effectiveCompletedOvers * 6;
+    
+    for (let i = 0; i < match.history.length; i++) {
+      if (legalCount === targetLegalStart) {
+        overStartIdx = i;
+        break;
+      }
+      if (match.history[i].type === 'legal' || match.history[i].type === 'wicket') {
+        legalCount++;
+      }
+    }
+    
+    return match.history.slice(overStartIdx);
+  }, [match.history, match.balls, isMatchFinished]);
 
   // Announce summary when innings/match finishes
   useEffect(() => {
@@ -257,37 +288,6 @@ export default function App() {
       history: [],
     });
   };
-
-  const currentOverBalls = useMemo(() => {
-    const totalLegalBalls = match.balls;
-    // If we are at exactly 6, 12, etc. balls, we might be at the start of a new over
-    // or just finished the previous one. 
-    // We want to show the current active over.
-    const completedOvers = Math.floor(totalLegalBalls / 6);
-    
-    // If the over is exactly finished (e.g. 6, 12 balls) and match is not finished,
-    // we show the next over (which will be empty initially).
-    // If match is finished, we show the last over.
-    const effectiveCompletedOvers = isMatchFinished 
-      ? Math.max(0, completedOvers - 1) 
-      : completedOvers;
-
-    let legalCount = 0;
-    let overStartIdx = 0;
-    const targetLegalStart = effectiveCompletedOvers * 6;
-    
-    for (let i = 0; i < match.history.length; i++) {
-      if (legalCount === targetLegalStart) {
-        overStartIdx = i;
-        break;
-      }
-      if (match.history[i].type === 'legal' || match.history[i].type === 'wicket') {
-        legalCount++;
-      }
-    }
-    
-    return match.history.slice(overStartIdx);
-  }, [match.history, match.balls, isMatchFinished]);
 
   const legalBallsInCurrentOver = match.balls % 6;
   // If we just finished an over (legalBallsInCurrentOver === 0) but match is not finished,
