@@ -1,0 +1,5 @@
+{
+  "name": "Local Cricket Scorer",
+  "description": "A simple and intuitive cricket scoring app for local matches with over-by-over tracking and undo functionality.",
+  "requestFramePermissions": []
+}
